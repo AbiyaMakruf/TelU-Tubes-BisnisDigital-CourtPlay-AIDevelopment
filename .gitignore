@@ -1,0 +1,7 @@
+datasets/*
+!datasets/
+results/*
+!results/
+*.pt
+examples/videos/*
+!examples/videos/
