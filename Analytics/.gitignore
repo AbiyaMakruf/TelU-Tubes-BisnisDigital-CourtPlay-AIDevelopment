@@ -1,1 +1,4 @@
 *.pt
+examples/
+*.avi
+*.mp4
