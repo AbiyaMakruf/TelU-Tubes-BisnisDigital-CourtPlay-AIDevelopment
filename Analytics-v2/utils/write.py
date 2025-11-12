@@ -1,6 +1,6 @@
 import cv2
 import subprocess
-def write(imgs_res, fps, path_output_video):
+def write_video(imgs_res, fps, path_output_video):
     path_avi = f"{path_output_video}.avi"
     path_mp4 = f"{path_output_video}.mp4"
     height, width = imgs_res[0].shape[:2]
@@ -22,3 +22,7 @@ def write(imgs_res, fps, path_output_video):
     ]
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+def write_image(imgs_res, path_output_folder):
+    frame = imgs_res[-1]
+    path_image = f"{path_output_folder}/frame.png"
+    cv2.imwrite(path_image, frame)

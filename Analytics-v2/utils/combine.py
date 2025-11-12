@@ -9,7 +9,7 @@ def get_court_img():
     return court_img
 
 def combine(frames, scenes, bounces, ball_track, homography_matrices, kps_court, persons_top, persons_bottom,
-         draw_trace=False, trace=7):
+         draw_trace=False, trace=10):
     """
     :params
         frames: list of original images
@@ -26,6 +26,8 @@ def combine(frames, scenes, bounces, ball_track, homography_matrices, kps_court,
         imgs_res: list of resulting images
     """
     imgs_res = []
+    imgs_ball = []
+    imgs_person = []
     width_minimap = 166
     height_minimap = 350
     is_track = [x is not None for x in homography_matrices] 
@@ -37,6 +39,7 @@ def combine(frames, scenes, bounces, ball_track, homography_matrices, kps_court,
         scene_rate = sum_track/(len_track+eps)
         if (scene_rate > 0.5):
             court_img = get_court_img()
+            court_img_ball = get_court_img()
 
             for i in range(scenes[num_scene][0], scenes[num_scene][1]):
                 img_res = frames[i]
@@ -77,11 +80,24 @@ def combine(frames, scenes, bounces, ball_track, homography_matrices, kps_court,
                     ball_point = cv2.perspectiveTransform(ball_point, inv_mat)
                     court_img = cv2.circle(court_img, (int(ball_point[0, 0, 0]), int(ball_point[0, 0, 1])),
                                                        radius=0, color=(0, 255, 255), thickness=50)
+                    # Kode Tambahan
+                    court_img_ball = cv2.circle(court_img_ball, (int(ball_point[0, 0, 0]), int(ball_point[0, 0, 1])),
+                                                       radius=0, color=(0, 255, 255), thickness=50)
 
                 minimap = court_img.copy()
+                # Kode Tambahan
+                minimap_ball = court_img_ball.copy()
+
+                # Kode Tambahan
+                if len(minimap_ball.shape) == 2:  # Grayscale image (1 channel)
+                    minimap_ball = cv2.cvtColor(minimap_ball, cv2.COLOR_GRAY2BGR)
+                imgs_ball.append(minimap_ball)
 
                 # draw persons
-                persons = persons_top[i] + persons_bottom[i]                    
+                persons = persons_top[i] + persons_bottom[i]
+                
+                # Kode Tambahan
+                court_img_person = get_court_img()                    
                 for j, person in enumerate(persons):
                     if len(person[0]) > 0:
                         person_bbox = list(person[0])
@@ -94,11 +110,21 @@ def combine(frames, scenes, bounces, ball_track, homography_matrices, kps_court,
                         person_point = cv2.perspectiveTransform(person_point, inv_mat)
                         minimap = cv2.circle(minimap, (int(person_point[0, 0, 0]), int(person_point[0, 0, 1])),
                                                            radius=0, color=(255, 0, 0), thickness=80)
+                        # Kode Tambahan
+                        court_img_person = cv2.circle(court_img_person, (int(person_point[0, 0, 0]), int(person_point[0, 0, 1])),
+                                                           radius=0, color=(255, 0, 0), thickness=80)
 
                 minimap = cv2.resize(minimap, (width_minimap, height_minimap))
                 img_res[30:(30 + height_minimap), (width - 30 - width_minimap):(width - 30), :] = minimap
                 imgs_res.append(img_res)
 
+                # Kode Tambahan
+                if len(court_img_person.shape) == 2:  # Grayscale image (1 channel)
+                    court_img_person = cv2.cvtColor(court_img_person, cv2.COLOR_GRAY2BGR)
+                imgs_person.append(court_img_person)
+
         else:    
+            print("Not Scene")
             imgs_res = imgs_res + frames[scenes[num_scene][0]:scenes[num_scene][1]] 
-    return imgs_res    
+    return imgs_res, imgs_ball, imgs_person      
+ 

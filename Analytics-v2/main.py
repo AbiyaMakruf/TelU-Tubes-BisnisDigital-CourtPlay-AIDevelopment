@@ -4,10 +4,10 @@ from utils.CourtDetector import CourtDetector
 from utils.PlayerDetector import PersonDetector
 from utils.BounceDetector import BounceDetector
 from utils.combine import combine
-from utils.write_video import write
+from utils.write import write_video, write_image
 from utils.scene_manager import scene_detect
 
-video_name = "15s.mp4"
+video_name = "5s.mp4"
 video_path = f"test_videos/{video_name}"
 output_path = f"results/output"
 
@@ -40,7 +40,7 @@ y_ball = [x[1] for x in ball_track]
 bounces = bounce_detector.predict(x_ball, y_ball)
 
 # Combine into image
-image_result = combine(frames,
+image_result, imgs_minimap_ball, imgs_minimal_player = combine(frames,
                        scenes, 
                        bounces, 
                        ball_track, 
@@ -51,4 +51,7 @@ image_result = combine(frames,
                        draw_trace=True)
 
 # Save output video
-write(image_result, fps, output_path)
+write_video(image_result, fps, output_path)
+write_video(imgs_minimap_ball, fps, "results/minimap_ball")
+write_video(imgs_minimal_player, fps, "results/minimap_player")
+write_image(imgs_minimap_ball, "results")
