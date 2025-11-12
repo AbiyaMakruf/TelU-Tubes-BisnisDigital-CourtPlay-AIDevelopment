@@ -12,7 +12,7 @@ video_path = f"test_videos/{video_name}"
 output_path = f"results/output"
 
 # Read video
-frames, fps, original_width, original_height = read_video(video_path)
+frames, fps, original_width, original_height = read_video(video_path, resize=False)
 
 # Scene detection
 scenes = scene_detect(video_path)
@@ -40,7 +40,7 @@ y_ball = [x[1] for x in ball_track]
 bounces = bounce_detector.predict(x_ball, y_ball)
 
 # Combine into image
-image_result, imgs_minimap_ball, imgs_minimal_player = combine(frames,
+image_result, imgs_minimap_ball, imgs_minimap_player, imgs_heatmap_player = combine(frames,
                        scenes, 
                        bounces, 
                        ball_track, 
@@ -50,8 +50,17 @@ image_result, imgs_minimap_ball, imgs_minimal_player = combine(frames,
                        persons_bottom,
                        draw_trace=True)
 
+
+convert_mp4 = False
 # Save output video
-write_video(image_result, fps, output_path)
-write_video(imgs_minimap_ball, fps, "results/minimap_ball")
-write_video(imgs_minimal_player, fps, "results/minimap_player")
-write_image(imgs_minimap_ball, "results")
+print("Saving output video...")
+write_video(image_result, fps, output_path, convert_mp4=convert_mp4)
+
+print("Saving minimap and heatmap images...")
+write_video(imgs_minimap_ball, fps, "results/minimap_ball", convert_mp4=convert_mp4)
+write_video(imgs_minimap_player, fps, "results/minimap_player", convert_mp4=convert_mp4)
+write_video(imgs_heatmap_player, fps, "results/heatmap_player", convert_mp4=convert_mp4)
+
+print("Saving sample images...")
+write_image(imgs_minimap_ball, "results/", True, "minimap_ball")
+# write_image(imgs_heatmap_player, "results/", False, "heatmap_player")

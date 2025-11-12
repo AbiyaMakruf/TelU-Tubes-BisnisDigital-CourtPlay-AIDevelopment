@@ -24,12 +24,18 @@ def combine(frames, scenes, bounces, ball_track, homography_matrices, kps_court,
         trace: the length of ball trace
     :return
         imgs_res: list of resulting images
+        imgs_ball: list of ball-only minimaps
+        imgs_person: list of player-only minimaps
+        imgs_heatmap: list of player movement heatmaps over court minimaps
     """
     imgs_res = []
     imgs_ball = []
     imgs_person = []
+    imgs_heatmap = []
     width_minimap = 166
     height_minimap = 350
+    heat_increment = 25.0
+    min_visits_for_red = 1  # allow hottest area to reach red even in short clips
     is_track = [x is not None for x in homography_matrices] 
     for num_scene in range(len(scenes)):
         sum_track = sum(is_track[scenes[num_scene][0]:scenes[num_scene][1]])
@@ -40,6 +46,9 @@ def combine(frames, scenes, bounces, ball_track, homography_matrices, kps_court,
         if (scene_rate > 0.5):
             court_img = get_court_img()
             court_img_ball = get_court_img()
+            court_img_heatmap = get_court_img()
+            heatmap_accum = np.zeros(court_img.shape[:2], dtype=np.float32)
+            heatmap_peak_value = heat_increment * min_visits_for_red
 
             for i in range(scenes[num_scene][0], scenes[num_scene][1]):
                 img_res = frames[i]
@@ -108,11 +117,16 @@ def combine(frames, scenes, bounces, ball_track, homography_matrices, kps_court,
                         person_point = list(person[1])
                         person_point = np.array(person_point, dtype=np.float32).reshape(1, 1, 2)
                         person_point = cv2.perspectiveTransform(person_point, inv_mat)
-                        minimap = cv2.circle(minimap, (int(person_point[0, 0, 0]), int(person_point[0, 0, 1])),
+                        px = int(np.clip(person_point[0, 0, 0], 0, heatmap_accum.shape[1] - 1))
+                        py = int(np.clip(person_point[0, 0, 1], 0, heatmap_accum.shape[0] - 1))
+                        minimap = cv2.circle(minimap, (px, py),
                                                            radius=0, color=(255, 0, 0), thickness=80)
                         # Kode Tambahan
-                        court_img_person = cv2.circle(court_img_person, (int(person_point[0, 0, 0]), int(person_point[0, 0, 1])),
+                        court_img_person = cv2.circle(court_img_person, (px, py),
                                                            radius=0, color=(255, 0, 0), thickness=80)
+                        # Heatmap accumulation
+                        heatmap_accum = cv2.circle(heatmap_accum, (px, py), radius=15,
+                                                   color=heat_increment, thickness=-1)
 
                 minimap = cv2.resize(minimap, (width_minimap, height_minimap))
                 img_res[30:(30 + height_minimap), (width - 30 - width_minimap):(width - 30), :] = minimap
@@ -122,9 +136,26 @@ def combine(frames, scenes, bounces, ball_track, homography_matrices, kps_court,
                 if len(court_img_person.shape) == 2:  # Grayscale image (1 channel)
                     court_img_person = cv2.cvtColor(court_img_person, cv2.COLOR_GRAY2BGR)
                 imgs_person.append(court_img_person)
+                # Build heatmap visualization blended over the court minimap
+                heatmap_blurred = cv2.GaussianBlur(heatmap_accum, (0, 0), sigmaX=12, sigmaY=12)
+                current_max = heatmap_blurred.max()
+                heatmap_peak_value = max(heatmap_peak_value, current_max)
+                display_denom = max(heatmap_peak_value, heat_increment * min_visits_for_red)
+                if display_denom < 1e-6:
+                    imgs_heatmap.append(court_img_heatmap.copy())
+                    continue
+                heatmap_norm = (heatmap_blurred / display_denom * 255.0).astype(np.uint8)
+                heatmask = heatmap_norm > 0
+                heatmap_color = cv2.applyColorMap(heatmap_norm, cv2.COLORMAP_JET)
+                heatmap_overlay = court_img_heatmap.copy()
+                heatmask = heatmap_norm > 0
+                alpha = 0.7
+                heatmap_overlay[heatmask] = cv2.addWeighted(heatmap_color[heatmask], alpha,
+                                                            heatmap_overlay[heatmask], 1 - alpha, 0)
+                imgs_heatmap.append(heatmap_overlay)
 
         else:    
             print("Not Scene")
             imgs_res = imgs_res + frames[scenes[num_scene][0]:scenes[num_scene][1]] 
-    return imgs_res, imgs_ball, imgs_person      
+    return imgs_res, imgs_ball, imgs_person, imgs_heatmap      
  
