@@ -1,1 +1,10 @@
 ultralytics
+matplotlib
+scenedetect
+numpy
+scipy
+pandas
+sympy
+tqdm
+opencv_python
+catboost

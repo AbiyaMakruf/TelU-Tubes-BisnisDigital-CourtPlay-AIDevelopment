@@ -62,21 +62,31 @@ class CourtReference:
         """
         Create court reference image using the lines positions
         """
-        court = np.zeros((self.court_height + 2 * self.top_bottom_border, self.court_width + 2 * self.right_left_border), dtype=np.uint8)
-        cv2.line(court, *self.baseline_top, 1, self.line_width)
-        cv2.line(court, *self.baseline_bottom, 1, self.line_width)
-        cv2.line(court, *self.net, 1, self.line_width)
-        cv2.line(court, *self.top_inner_line, 1, self.line_width)
-        cv2.line(court, *self.bottom_inner_line, 1, self.line_width)
-        cv2.line(court, *self.left_court_line, 1, self.line_width)
-        cv2.line(court, *self.right_court_line, 1, self.line_width)
-        cv2.line(court, *self.left_inner_line, 1, self.line_width)
-        cv2.line(court, *self.right_inner_line, 1, self.line_width)
-        cv2.line(court, *self.middle_line, 1, self.line_width)
+        # Set the background to 28
+        court = np.full(
+            (
+                self.court_height + 2 * self.top_bottom_border,
+                self.court_width + 2 * self.right_left_border,
+                3,
+            ),
+            (28, 28, 28),
+            dtype=np.uint8,
+        )
+        
+        line_color = (20, 206, 163)
+        cv2.line(court, *self.baseline_top, line_color, self.line_width)
+        cv2.line(court, *self.baseline_bottom, line_color, self.line_width)
+        cv2.line(court, *self.net, line_color, self.line_width)
+        cv2.line(court, *self.top_inner_line, line_color, self.line_width)
+        cv2.line(court, *self.bottom_inner_line, line_color, self.line_width)
+        cv2.line(court, *self.left_court_line, line_color, self.line_width)
+        cv2.line(court, *self.right_court_line, line_color, self.line_width)
+        cv2.line(court, *self.left_inner_line, line_color, self.line_width)
+        cv2.line(court, *self.right_inner_line, line_color, self.line_width)
+        cv2.line(court, *self.middle_line, line_color, self.line_width)
+        
         court = cv2.dilate(court, np.ones((5, 5), dtype=np.uint8))
-        # court = cv2.dilate(court, np.ones((7, 7), dtype=np.uint8))
-        # plt.imsave('court_configurations/court_reference.png', court, cmap='gray')
-        # self.court = court
+    
         return court
 
     def get_important_lines(self):
@@ -96,17 +106,18 @@ class CourtReference:
         """
         Create all configurations of 4 points on court reference
         """
+        court_gray = cv2.cvtColor(self.court, cv2.COLOR_BGR2GRAY)
         for i, conf in self.court_conf.items():
-            c = cv2.cvtColor(255 - self.court, cv2.COLOR_GRAY2BGR)
-            for p in conf:
-                c = cv2.circle(c, p, 15, (0, 0, 255), 30)
+            c = cv2.cvtColor(255 - court_gray, cv2.COLOR_GRAY2BGR)
             cv2.imwrite(f'court_configurations/court_conf_{i}.png', c)
 
     def get_court_mask(self, mask_type=0):
         """
         Get mask of the court
         """
-        mask = np.ones_like(self.court)
+        height = self.court_height + 2 * self.top_bottom_border
+        width = self.court_width + 2 * self.right_left_border
+        mask = np.ones((height, width), dtype=np.uint8)
         if mask_type == 1:  # Bottom half court
             # mask[:self.net[0][1] - 1000, :] = 0
             mask[:self.net[0][1], :] = 0

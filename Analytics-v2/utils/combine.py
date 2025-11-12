@@ -3,9 +3,8 @@ import numpy as np
 from .court_reference import CourtReference
 def get_court_img():
     court_reference = CourtReference()
-    court = court_reference.build_court_reference()
-    court = cv2.dilate(court, np.ones((10, 10), dtype=np.uint8))
-    court_img = (np.stack((court, court, court), axis=2)*255).astype(np.uint8)
+    court_img = court_reference.court.copy()
+    court_img = cv2.dilate(court_img, np.ones((10, 10), dtype=np.uint8))
     return court_img
 
 def combine(frames, scenes, bounces, ball_track, homography_matrices, kps_court, persons_top, persons_bottom,

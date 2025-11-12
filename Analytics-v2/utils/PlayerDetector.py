@@ -41,19 +41,34 @@ class PersonDetector():
         matrix = cv2.invert(inv_matrix)[1]
         mask_top_court = cv2.warpPerspective(self.ref_top_court, matrix, image.shape[1::-1])
         mask_bottom_court = cv2.warpPerspective(self.ref_bottom_court, matrix, image.shape[1::-1])
+
+        if mask_top_court.ndim == 3:
+            mask_top_court = mask_top_court[..., 0]
+        if mask_bottom_court.ndim == 3:
+            mask_bottom_court = mask_bottom_court[..., 0]
+
+        mask_top_court = (mask_top_court > 0).astype(np.uint8)
+        mask_bottom_court = (mask_bottom_court > 0).astype(np.uint8)
         person_bboxes_top, person_bboxes_bottom = [], []
 
         bboxes, probs = self.detect(image, person_min_score=0.85)
         if len(bboxes) > 0:
             person_points = [[int((bbox[2] + bbox[0]) / 2), int(bbox[3])] for bbox in bboxes]
             person_bboxes = list(zip(bboxes, person_points))
-  
-            person_bboxes_top = [pt for pt in person_bboxes if mask_top_court[pt[1][1]-1, pt[1][0]] == 1]
-            person_bboxes_bottom = [pt for pt in person_bboxes if mask_bottom_court[pt[1][1] - 1, pt[1][0]] == 1]
+
+            person_bboxes_top = [
+                pt for pt in person_bboxes
+                if pt[1][1] > 0 and mask_top_court[pt[1][1] - 1, pt[1][0]] == 1
+            ]
+            person_bboxes_bottom = [
+                pt for pt in person_bboxes
+                if pt[1][1] > 0 and mask_bottom_court[pt[1][1] - 1, pt[1][0]] == 1
+            ]
 
             if filter_players:
-                person_bboxes_top, person_bboxes_bottom = self.filter_players(person_bboxes_top, person_bboxes_bottom,
-                                                                              matrix)
+                person_bboxes_top, person_bboxes_bottom = self.filter_players(
+                    person_bboxes_top, person_bboxes_bottom, matrix)
+
         return person_bboxes_top, person_bboxes_bottom
 
     def filter_players(self, person_bboxes_top, person_bboxes_bottom, matrix):
