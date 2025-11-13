@@ -4,6 +4,7 @@ import numpy as np
 from collections import deque
 from .tracknet import BallTrackerNet
 from scipy.spatial import distance
+from tqdm import tqdm
 from utils.read_video import frame_generator
 class BallDetector:
     def __init__(self, path_model, original_width, original_height):
@@ -46,10 +47,13 @@ class BallDetector:
 
     def infer_model(self, frames):
         iterator = ((idx, frame) for idx, frame in enumerate(frames))
+        iterator = tqdm(iterator, total=len(frames), desc="[Ball]", unit="frame")
         return self._infer_from_iterator(iterator)
 
-    def infer_video(self, path_video):
-        return self._infer_from_iterator(frame_generator(path_video))
+    def infer_video(self, path_video, total_frames=None):
+        iterator = frame_generator(path_video)
+        iterator = tqdm(iterator, total=total_frames, desc="[Ball]", unit="frame")
+        return self._infer_from_iterator(iterator)
 
     def postprocess(self, feature_map, prev_pred, max_dist=80):
         scale = self.scale_factor

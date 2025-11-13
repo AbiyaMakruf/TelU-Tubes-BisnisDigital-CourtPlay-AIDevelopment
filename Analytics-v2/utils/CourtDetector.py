@@ -24,7 +24,7 @@ class CourtDetector():
 
         kps_res = []
         matrixes_res = []
-        for _, image_frame in tqdm(iterator):
+        for _, image_frame in iterator:
             img = cv2.resize(image_frame, (output_width, output_height))
             inp = (img.astype(np.float32) / 255.0).transpose(2, 0, 1)
             inp_tensor = torch.from_numpy(inp).unsqueeze(0).to(self.device)
@@ -59,10 +59,13 @@ class CourtDetector():
 
     def infer_model(self, frames):
         iterator = ((idx, frame) for idx, frame in enumerate(frames))
+        iterator = tqdm(iterator, total=len(frames), desc="[Court]", unit="frame")
         return self._infer_from_iterator(iterator)
 
-    def infer_video(self, path_video):
-        return self._infer_from_iterator(frame_generator(path_video))
+    def infer_video(self, path_video, total_frames=None):
+        iterator = frame_generator(path_video)
+        iterator = tqdm(iterator, total=total_frames, desc="[Court]", unit="frame")
+        return self._infer_from_iterator(iterator)
 
 
 

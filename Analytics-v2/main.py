@@ -12,7 +12,7 @@ from utils.scene_manager import scene_detect
 import time
 
 start_time = time.time()
-video_name = "120s.mp4"
+video_name = "15s.mp4"
 video_path = f"test_videos/{video_name}"
 output_path = "results/output"
 
@@ -55,7 +55,7 @@ start = perf_counter()
 ball_detector = BallDetector(path_model='models/ball_track.pt',
                              original_width=original_width,
                              original_height=original_height)
-ball_track = ball_detector.infer_video(video_path)
+ball_track = ball_detector.infer_video(video_path, total_frames=frame_count)
 ensure_length(ball_track, frame_count, (None, None))
 timings.append(("ball_detection", perf_counter() - start))
 
@@ -65,7 +65,7 @@ start = perf_counter()
 court_detector = CourtDetector(path_model='models/court_detector.pt',
                                original_width=original_width,
                                original_height=original_height)
-homography_matrices, kps_court = court_detector.infer_video(video_path)
+homography_matrices, kps_court = court_detector.infer_video(video_path, total_frames=frame_count)
 ensure_length(homography_matrices, frame_count, None)
 ensure_length(kps_court, frame_count, None)
 timings.append(("court_detection", perf_counter() - start))
@@ -79,6 +79,7 @@ persons_top, persons_bottom = person_detector.track_players_video(
     homography_matrices,
     filter_players=False,
     stride=PLAYER_DETECTION_STRIDE,
+    total_frames=frame_count,
 )
 ensure_length(persons_top, frame_count, [])
 ensure_length(persons_bottom, frame_count, [])

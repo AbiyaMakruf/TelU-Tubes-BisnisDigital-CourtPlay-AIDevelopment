@@ -115,14 +115,16 @@ class PersonDetector():
             persons_bottom.append(self._clone_person_list(last_bottom))
         return persons_top, persons_bottom    
 
-    def track_players_video(self, path_video, matrix_all, filter_players=False, stride=1):
+    def track_players_video(self, path_video, matrix_all, filter_players=False, stride=1, total_frames=None):
         persons_top = []
         persons_bottom = []
         stride = max(1, stride)
         last_top, last_bottom = [], []
-        max_frames = len(matrix_all)
+        max_frames = total_frames if total_frames is not None else len(matrix_all)
 
-        for idx, frame in frame_generator(path_video):
+        iterator = frame_generator(path_video)
+        iterator = tqdm(iterator, total=max_frames, desc="[Player]", unit="frame")
+        for idx, frame in iterator:
             if idx >= max_frames:
                 break
             matrix = matrix_all[idx]
@@ -142,4 +144,3 @@ class PersonDetector():
             persons_bottom.append([])
 
         return persons_top, persons_bottom
-
