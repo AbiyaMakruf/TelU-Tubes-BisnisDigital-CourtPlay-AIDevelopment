@@ -1,7 +1,6 @@
 import torch
 import cv2
 import numpy as np
-import torch.nn.functional as F
 from tqdm import tqdm
 from .tracknet import BallTrackerNet
 from .homography import get_trans_matrix, refer_kps
@@ -26,12 +25,12 @@ class CourtDetector():
         matrixes_res = []
         for num_frame, image in enumerate(tqdm(frames)):
             img = cv2.resize(image, (output_width, output_height))
-            inp = (img.astype(np.float32)/255.)
-            inp = torch.tensor(np.rollaxis(inp, 2, 0))
-            inp = inp.unsqueeze(0)
+            inp = (img.astype(np.float32) / 255.0).transpose(2, 0, 1)
+            inp_tensor = torch.from_numpy(inp).unsqueeze(0).to(self.device)
 
-            out = self.model(inp.float().to(self.device))[0]
-            pred = F.sigmoid(out).detach().cpu().numpy()
+            with torch.no_grad():
+                out = self.model(inp_tensor)[0]
+            pred = torch.sigmoid(out).detach().cpu().numpy()
 
             points = []
             for kps_num in range(14):

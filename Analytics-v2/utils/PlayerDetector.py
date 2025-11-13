@@ -4,11 +4,12 @@ import numpy as np
 from tqdm import tqdm
 from .court_reference import CourtReference
 from scipy.spatial import distance
-from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2, FasterRCNN_ResNet50_FPN_V2_Weights
+from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2, fasterrcnn_mobilenet_v3_large_fpn,  FasterRCNN_ResNet50_FPN_V2_Weights, FasterRCNN_MobileNet_V3_Large_FPN_Weights
 
 class PersonDetector():
     def __init__(self, dtype=torch.FloatTensor):
-        self.detection_model = fasterrcnn_resnet50_fpn_v2(weights=FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT)
+        # self.detection_model = fasterrcnn_resnet50_fpn_v2(weights=FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT)
+        self.detection_model = fasterrcnn_mobilenet_v3_large_fpn(weights=FasterRCNN_MobileNet_V3_Large_FPN_Weights.DEFAULT)
         self.detection_model = self.detection_model.to(dtype)
         self.detection_model.eval()
         self.dtype = dtype
@@ -89,19 +90,28 @@ class PersonDetector():
             person_bboxes_bottom = [person_bboxes_bottom[ind]]
         return person_bboxes_top, person_bboxes_bottom
     
-    def track_players(self, frames, matrix_all, filter_players=False):
+    def _clone_person_list(self, persons):
+        return [(bbox.copy(), (int(point[0]), int(point[1]))) for bbox, point in persons]
+
+    def track_players(self, frames, matrix_all, filter_players=False, stride=1):
         persons_top = []
         persons_bottom = []
+        stride = max(1, stride)
+        last_top, last_bottom = [], []
         min_len = min(len(frames), len(matrix_all))
         for num_frame in tqdm(range(min_len)):
             img = frames[num_frame]
-            if matrix_all[num_frame] is not None:
-                inv_matrix = matrix_all[num_frame]
+            matrix = matrix_all[num_frame]
+            detect_now = matrix is not None and (num_frame % stride == 0 or not last_top and not last_bottom)
+            if matrix is not None and detect_now:
+                inv_matrix = matrix
                 person_top, person_bottom = self.detect_top_and_bottom_players(img, inv_matrix, filter_players)
-            else:
-                person_top, person_bottom = [], []
-            persons_top.append(person_top)
-            persons_bottom.append(person_bottom)
+                last_top = self._clone_person_list(person_top)
+                last_bottom = self._clone_person_list(person_bottom)
+            elif matrix is None:
+                last_top, last_bottom = [], []
+            persons_top.append(self._clone_person_list(last_top))
+            persons_bottom.append(self._clone_person_list(last_bottom))
         return persons_top, persons_bottom    
 
 

@@ -1,17 +1,45 @@
 import cv2
 import numpy as np
-from court_reference import CourtReference
+from dataclasses import dataclass
+from time import perf_counter
+from typing import Generator, Optional
+from .court_reference import CourtReference
 
 
 MINIMAP_WIDTH = 166
 MINIMAP_HEIGHT = 350
-HEAT_INCREMENT = 5
-HEAT_PERCENTILE = 98  # percentile that should map near red
-HEAT_TARGET_DECAY = 0.985  # smoothing for dynamic scaling
-HEAT_GAUSSIAN_SIGMA = 25
-HEAT_RADIUS = 10
+PLAYER_HEAT_INCREMENT = 5
+PLAYER_HEAT_PERCENTILE = 98  # percentile that should map near red
+PLAYER_HEAT_TARGET_DECAY = 0.985  # smoothing for dynamic scaling
+PLAYER_HEAT_GAUSSIAN_SIGMA = 25
+PLAYER_HEAT_RADIUS = 10
+BALL_HEAT_INCREMENT = 12
+BALL_HEAT_PERCENTILE = 96
+BALL_HEAT_TARGET_DECAY = 0.99
+BALL_HEAT_GAUSSIAN_SIGMA = 20
+BALL_HEAT_RADIUS = 14
 HEAT_ALPHA = 0.65
 CONTOUR_LEVELS = [40, 90, 140, 190, 230]
+PERCENTILE_TARGET_SAMPLES = 250_000
+
+
+@dataclass
+class CombineFrameOutputs:
+    combined: Optional[np.ndarray] = None
+    minimap_ball: Optional[np.ndarray] = None
+    minimap_player: Optional[np.ndarray] = None
+    heatmap_player: Optional[np.ndarray] = None
+    heatmap_ball: Optional[np.ndarray] = None
+    profiling: Optional[dict] = None
+
+
+@dataclass
+class CombineRenderOptions:
+    combined: bool = True
+    minimap_ball: bool = True
+    minimap_player: bool = True
+    heatmap_player: bool = True
+    heatmap_ball: bool = True
 
 
 def get_court_img():
@@ -74,78 +102,203 @@ def _blend_contour_map(base, heat_norm):
     return overlay
 
 
-def combine(frames, scenes, bounces, ball_track, homography_matrices, kps_court,
-            persons_top, persons_bottom, draw_trace=False, trace=10):
+def _sample_positive_percentile(arr, percentile):
     """
-    :return
-        imgs_res: list of resulting images
-        imgs_ball: list of ball-only minimaps
-        imgs_person: list of player-only minimaps
-        imgs_heatmap: list of contour heatmaps
+    Estimate percentile from a strided subset to avoid allocating huge helper arrays.
+    The stride is chosen so that the sampled view stays close to PERCENTILE_TARGET_SAMPLES.
     """
-    imgs_res, imgs_ball, imgs_person, imgs_heatmap = [], [], [], []
+    if not np.any(arr > 0):
+        return 0.0
+    total = arr.shape[0] * arr.shape[1]
+    stride = int(max(1, np.sqrt(total / (PERCENTILE_TARGET_SAMPLES + 1e-6))))
+    sampled = arr[::stride, ::stride]
+    positives = sampled[sampled > 0]
+    if positives.size == 0:
+        # Fallback to the entire array when the strided sample missed positives.
+        positives = arr[arr > 0]
+    return float(np.percentile(positives, percentile))
+
+
+def combine_stream(frames, scenes, bounces, ball_track, homography_matrices, kps_court,
+                   persons_top, persons_bottom, draw_trace=False, trace=10,
+                   render_options: Optional[CombineRenderOptions] = None) -> Generator[CombineFrameOutputs, None, None]:
+    """
+    Generator variant that yields CombineFrameOutputs per frame to keep memory usage flat.
+    `render_options` allows enabling/disabling individual visualizations to save time/memory.
+    """
+    if render_options is None:
+        render_options = CombineRenderOptions()
+
+    want_combined = render_options.combined
+    want_minimap_ball = render_options.minimap_ball
+    want_minimap_player = render_options.minimap_player
+    want_heatmap_player = render_options.heatmap_player
+    want_heatmap_ball = render_options.heatmap_ball
+    need_any_court = any([want_combined, want_minimap_ball, want_minimap_player,
+                          want_heatmap_player, want_heatmap_ball])
+    if not (want_combined or need_any_court):
+        raise ValueError("At least one visualization must be enabled in CombineRenderOptions.")
+    need_player_projection = any([want_combined, want_minimap_player, want_heatmap_player])
+
     is_track = [mat is not None for mat in homography_matrices]
 
     for scene_start, scene_end in scenes:
         tracked = is_track[scene_start:scene_end]
         if not tracked or sum(tracked) / (len(tracked) + 1e-15) <= 0.5:
-            imgs_res.extend(frames[scene_start:scene_end])
+            neutral_court_color = None
+            if need_any_court:
+                neutral = get_court_img()
+                if neutral.ndim == 2:
+                    neutral = cv2.cvtColor(neutral, cv2.COLOR_GRAY2BGR)
+                neutral_court_color = neutral
+            for frame in frames[scene_start:scene_end]:
+                frame_start = perf_counter()
+                frame_copy = frame.copy() if want_combined else None
+                elapsed = perf_counter() - frame_start
+                frame_profile = {"scene_passthrough": elapsed, "total": elapsed}
+                yield CombineFrameOutputs(
+                    combined=frame_copy if want_combined else None,
+                    minimap_ball=neutral_court_color.copy() if (want_minimap_ball and neutral_court_color is not None) else None,
+                    minimap_player=neutral_court_color.copy() if (want_minimap_player and neutral_court_color is not None) else None,
+                    heatmap_player=neutral_court_color.copy() if (want_heatmap_player and neutral_court_color is not None) else None,
+                    heatmap_ball=neutral_court_color.copy() if (want_heatmap_ball and neutral_court_color is not None) else None,
+                    profiling=frame_profile,
+                )
             continue
 
-        court_base = get_court_img()
-        court_ball = court_base.copy()
-        court_heat = court_base.copy()
-        heatmap_accum = np.zeros(court_base.shape[:2], dtype=np.float32)
-        heat_target = HEAT_INCREMENT * 15
+        court_template = get_court_img() if need_any_court else None
+        if court_template is not None and court_template.ndim == 2:
+            court_template = cv2.cvtColor(court_template, cv2.COLOR_GRAY2BGR)
+        court_base = court_template.copy() if want_combined else None
+        court_ball = (court_template.copy() if want_minimap_ball else None)
+        court_player_heat = court_template.copy() if want_heatmap_player else None
+        court_ball_heat = court_template.copy() if want_heatmap_ball else None
+        heatmap_accum = np.zeros(court_template.shape[:2], dtype=np.float32) if want_heatmap_player else None
+        ball_heatmap_accum = np.zeros(court_template.shape[:2], dtype=np.float32) if want_heatmap_ball else None
+        heat_target = PLAYER_HEAT_INCREMENT * 15
+        ball_heat_target = BALL_HEAT_INCREMENT * 8
 
         for idx in range(scene_start, scene_end):
-            frame = frames[idx].copy()
+            frame_profile = {}
+            frame_start = perf_counter()
             inv_mat = homography_matrices[idx]
-            frame = _draw_ball(frame, ball_track, idx, draw_trace, trace)
-            frame = _draw_court_keypoints(frame, kps_court[idx] if idx < len(kps_court) else None)
+
+            frame = None
+            if want_combined:
+                section_start = perf_counter()
+                frame = frames[idx].copy()
+                frame = _draw_ball(frame, ball_track, idx, draw_trace, trace)
+                frame = _draw_court_keypoints(frame, kps_court[idx] if idx < len(kps_court) else None)
+                frame_profile["frame_draw"] = perf_counter() - section_start
 
             if idx in bounces and inv_mat is not None and ball_track[idx][0]:
-                ball_point = _project_point(ball_track[idx], inv_mat, court_base.shape[:2])
-                cv2.circle(court_base, ball_point, radius=0, color=(0, 255, 255), thickness=50)
-                cv2.circle(court_ball, ball_point, radius=0, color=(0, 255, 255), thickness=50)
+                section_start = perf_counter()
+                ball_point = _project_point(ball_track[idx], inv_mat, court_template.shape[:2])
+                if want_combined and court_base is not None:
+                    cv2.circle(court_base, ball_point, radius=0, color=(0, 255, 255), thickness=50)
+                if want_minimap_ball and court_ball is not None:
+                    cv2.circle(court_ball, ball_point, radius=0, color=(0, 255, 255), thickness=50)
+                if want_heatmap_ball and ball_heatmap_accum is not None:
+                    ball_heatmap_accum = cv2.circle(ball_heatmap_accum, ball_point, BALL_HEAT_RADIUS,
+                                                    BALL_HEAT_INCREMENT, -1)
+                frame_profile["bounce_projection"] = frame_profile.get("bounce_projection", 0.0) + (
+                    perf_counter() - section_start
+                )
 
-            minimap = court_base.copy()
-            minimap_ball = court_ball.copy()
-            if minimap_ball.ndim == 2:
-                minimap_ball = cv2.cvtColor(minimap_ball, cv2.COLOR_GRAY2BGR)
-            imgs_ball.append(minimap_ball)
+            section_start = perf_counter()
+            minimap = court_base.copy() if want_combined else None
+            imgs_ball_frame = court_ball.copy() if want_minimap_ball else None
+            persons = persons_top[idx] + persons_bottom[idx] if need_player_projection else []
+            court_person = court_template.copy() if want_minimap_player else None
+            frame_profile["court_copy"] = frame_profile.get("court_copy", 0.0) + (perf_counter() - section_start)
+            if persons:
+                section_start = perf_counter()
+                for bbox, person_point in persons:
+                    if len(bbox) == 0 or inv_mat is None:
+                        continue
+                    px, py = _project_point(person_point, inv_mat, court_template.shape[:2])
+                    if want_combined and frame is not None:
+                        x1, y1, x2, y2 = map(int, bbox)
+                        frame = cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                    if minimap is not None:
+                        cv2.circle(minimap, (px, py), radius=0, color=(255, 0, 0), thickness=80)
+                    if court_person is not None:
+                        cv2.circle(court_person, (px, py), radius=0, color=(255, 0, 0), thickness=80)
+                    if heatmap_accum is not None:
+                        heatmap_accum = cv2.circle(heatmap_accum, (px, py), PLAYER_HEAT_RADIUS,
+                                                   PLAYER_HEAT_INCREMENT, -1)
+                frame_profile["player_projection"] = frame_profile.get("player_projection", 0.0) + (
+                    perf_counter() - section_start
+                )
 
-            persons = persons_top[idx] + persons_bottom[idx]
-            court_person = get_court_img()
-            for bbox, person_point in persons:
-                if len(bbox) == 0 or inv_mat is None:
-                    continue
-                x1, y1, x2, y2 = map(int, bbox)
-                frame = cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                px, py = _project_point(person_point, inv_mat, court_base.shape[:2])
-                cv2.circle(minimap, (px, py), radius=0, color=(255, 0, 0), thickness=80)
-                cv2.circle(court_person, (px, py), radius=0, color=(255, 0, 0), thickness=80)
-                heatmap_accum = cv2.circle(heatmap_accum, (px, py), HEAT_RADIUS, HEAT_INCREMENT, -1)
+            if want_combined and frame is not None and minimap is not None:
+                section_start = perf_counter()
+                minimap_resized = cv2.resize(minimap, (MINIMAP_WIDTH, MINIMAP_HEIGHT))
+                frame[30:30 + MINIMAP_HEIGHT,
+                      frame.shape[1] - 30 - MINIMAP_WIDTH:frame.shape[1] - 30] = minimap_resized
+                frame_profile["minimap_embed"] = frame_profile.get("minimap_embed", 0.0) + (
+                    perf_counter() - section_start
+                )
+            combined_frame = frame if want_combined else None
 
-            minimap_resized = cv2.resize(minimap, (MINIMAP_WIDTH, MINIMAP_HEIGHT))
-            frame[30:30 + MINIMAP_HEIGHT, frame.shape[1] - 30 - MINIMAP_WIDTH:frame.shape[1] - 30] = minimap_resized
-            imgs_res.append(frame)
+            imgs_person_frame = court_person if want_minimap_player else None
 
-            if court_person.ndim == 2:
-                court_person = cv2.cvtColor(court_person, cv2.COLOR_GRAY2BGR)
-            imgs_person.append(court_person)
+            imgs_heatmap_frame = None
+            if want_heatmap_player and heatmap_accum is not None:
+                section_start = perf_counter()
+                heat_blurred = cv2.GaussianBlur(heatmap_accum, (0, 0),
+                                                sigmaX=PLAYER_HEAT_GAUSSIAN_SIGMA,
+                                                sigmaY=PLAYER_HEAT_GAUSSIAN_SIGMA)
+                heat_percentile = _sample_positive_percentile(heat_blurred, PLAYER_HEAT_PERCENTILE)
+                if heat_percentile == 0.0:
+                    imgs_heatmap_frame = court_player_heat.copy()
+                else:
+                    heat_target = max(heat_target * PLAYER_HEAT_TARGET_DECAY,
+                                      heat_percentile, PLAYER_HEAT_INCREMENT)
+                    heat_norm = np.clip((heat_blurred / (heat_target + 1e-6)) * 255.0, 0, 255).astype(np.uint8)
+                    imgs_heatmap_frame = _blend_contour_map(court_player_heat, heat_norm)
+                frame_profile["heatmap_player"] = frame_profile.get("heatmap_player", 0.0) + (
+                    perf_counter() - section_start
+                )
 
-            heat_blurred = cv2.GaussianBlur(heatmap_accum, (0, 0),
-                                            sigmaX=HEAT_GAUSSIAN_SIGMA,
-                                            sigmaY=HEAT_GAUSSIAN_SIGMA)
-            heat_values = heat_blurred[heat_blurred > 0]
-            if heat_values.size == 0:
-                imgs_heatmap.append(court_heat.copy())
-                continue
-            percentile = np.percentile(heat_values, HEAT_PERCENTILE)
-            heat_target = max(heat_target * HEAT_TARGET_DECAY, percentile, HEAT_INCREMENT)
-            heat_norm = np.clip((heat_blurred / (heat_target + 1e-6)) * 255.0, 0, 255).astype(np.uint8)
-            contour_overlay = _blend_contour_map(court_heat, heat_norm)
-            imgs_heatmap.append(contour_overlay)
+            imgs_ball_heatmap_frame = None
+            if want_heatmap_ball and ball_heatmap_accum is not None:
+                section_start = perf_counter()
+                ball_heat_blurred = cv2.GaussianBlur(ball_heatmap_accum, (0, 0),
+                                                     sigmaX=BALL_HEAT_GAUSSIAN_SIGMA,
+                                                     sigmaY=BALL_HEAT_GAUSSIAN_SIGMA)
+                ball_percentile = _sample_positive_percentile(ball_heat_blurred, BALL_HEAT_PERCENTILE)
+                if ball_percentile == 0.0:
+                    imgs_ball_heatmap_frame = court_ball_heat.copy()
+                else:
+                    ball_heat_target = max(ball_heat_target * BALL_HEAT_TARGET_DECAY,
+                                           ball_percentile, BALL_HEAT_INCREMENT)
+                    ball_heat_norm = np.clip((ball_heat_blurred / (ball_heat_target + 1e-6)) * 255.0,
+                                             0, 255).astype(np.uint8)
+                    imgs_ball_heatmap_frame = _blend_contour_map(court_ball_heat, ball_heat_norm)
+                frame_profile["heatmap_ball"] = frame_profile.get("heatmap_ball", 0.0) + (
+                    perf_counter() - section_start
+                )
 
-    return imgs_res, imgs_ball, imgs_person, imgs_heatmap
+            frame_profile["total"] = frame_profile.get("total", 0.0) + (perf_counter() - frame_start)
+            yield CombineFrameOutputs(
+                combined=combined_frame,
+                minimap_ball=imgs_ball_frame,
+                minimap_player=imgs_person_frame,
+                heatmap_player=imgs_heatmap_frame,
+                heatmap_ball=imgs_ball_heatmap_frame,
+                profiling=frame_profile,
+            )
+
+
+def combine(*args, render_options: Optional[CombineRenderOptions] = None, **kwargs):
+    if render_options is None:
+        render_options = CombineRenderOptions()
+    imgs_res, imgs_ball, imgs_person, imgs_heatmap, imgs_ball_heatmap = [], [], [], [], []
+    for outputs in combine_stream(*args, render_options=render_options, **kwargs):
+        imgs_res.append(outputs.combined)
+        imgs_ball.append(outputs.minimap_ball)
+        imgs_person.append(outputs.minimap_player)
+        imgs_heatmap.append(outputs.heatmap_player)
+        imgs_ball_heatmap.append(outputs.heatmap_ball)
+    return imgs_res, imgs_ball, imgs_person, imgs_heatmap, imgs_ball_heatmap
