@@ -5,6 +5,7 @@ from tqdm import tqdm
 from .court_reference import CourtReference
 from scipy.spatial import distance
 from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2, fasterrcnn_mobilenet_v3_large_fpn,  FasterRCNN_ResNet50_FPN_V2_Weights, FasterRCNN_MobileNet_V3_Large_FPN_Weights
+from utils.read_video import frame_generator
 
 class PersonDetector():
     def __init__(self, dtype=torch.FloatTensor):
@@ -114,4 +115,31 @@ class PersonDetector():
             persons_bottom.append(self._clone_person_list(last_bottom))
         return persons_top, persons_bottom    
 
+    def track_players_video(self, path_video, matrix_all, filter_players=False, stride=1):
+        persons_top = []
+        persons_bottom = []
+        stride = max(1, stride)
+        last_top, last_bottom = [], []
+        max_frames = len(matrix_all)
+
+        for idx, frame in frame_generator(path_video):
+            if idx >= max_frames:
+                break
+            matrix = matrix_all[idx]
+            detect_now = matrix is not None and (idx % stride == 0 or not last_top and not last_bottom)
+            if matrix is not None and detect_now:
+                inv_matrix = matrix
+                person_top, person_bottom = self.detect_top_and_bottom_players(frame, inv_matrix, filter_players)
+                last_top = self._clone_person_list(person_top)
+                last_bottom = self._clone_person_list(person_bottom)
+            elif matrix is None:
+                last_top, last_bottom = [], []
+            persons_top.append(self._clone_person_list(last_top))
+            persons_bottom.append(self._clone_person_list(last_bottom))
+
+        while len(persons_top) < max_frames:
+            persons_top.append([])
+            persons_bottom.append([])
+
+        return persons_top, persons_bottom
 

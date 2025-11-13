@@ -1,6 +1,6 @@
 from collections import defaultdict
 from time import perf_counter
-from utils.read_video import read_video
+from utils.read_video import video_metadata, VideoFrameAccessor
 from utils.BallDetector import BallDetector
 from utils.CourtDetector import CourtDetector
 from utils.PlayerDetector import PersonDetector
@@ -12,7 +12,7 @@ from utils.scene_manager import scene_detect
 import time
 
 start_time = time.time()
-video_name = "494s.mp4"
+video_name = "120s.mp4"
 video_path = f"test_videos/{video_name}"
 output_path = "results/output"
 
@@ -21,20 +21,27 @@ OUTPUT_SELECTION = CombineRenderOptions(
     combined=True,
     minimap_ball=True,
     minimap_player=True,
-    heatmap_player=False,
-    heatmap_ball=False,
+    heatmap_player=True,
+    heatmap_ball=True,
 )
 PLAYER_DETECTION_STRIDE = 2  # >=2 skips frames for faster player detection (slight accuracy drop)
 CONVERT_MP4 = True
 
+
+def ensure_length(seq, target_len, filler):
+    if len(seq) < target_len:
+        seq.extend([filler] * (target_len - len(seq)))
+    elif len(seq) > target_len:
+        del seq[target_len:]
+
 # Track timings for each pipeline stage
 timings = []
 
-# Read video
-print("[Read] Loading video frames...")
+# Read metadata
+print("[Read] Gathering video metadata...")
 start = perf_counter()
-frames, fps, original_width, original_height = read_video(video_path, resize=False)
-timings.append(("read_video", perf_counter() - start))
+fps, original_width, original_height, frame_count = video_metadata(video_path)
+timings.append(("video_metadata", perf_counter() - start))
 
 # Scene detection
 print("[Scene] Detecting scene boundaries...")
@@ -48,7 +55,8 @@ start = perf_counter()
 ball_detector = BallDetector(path_model='models/ball_track.pt',
                              original_width=original_width,
                              original_height=original_height)
-ball_track = ball_detector.infer_model(frames)
+ball_track = ball_detector.infer_video(video_path)
+ensure_length(ball_track, frame_count, (None, None))
 timings.append(("ball_detection", perf_counter() - start))
 
 # Inference court
@@ -57,19 +65,23 @@ start = perf_counter()
 court_detector = CourtDetector(path_model='models/court_detector.pt',
                                original_width=original_width,
                                original_height=original_height)
-homography_matrices, kps_court = court_detector.infer_model(frames)
+homography_matrices, kps_court = court_detector.infer_video(video_path)
+ensure_length(homography_matrices, frame_count, None)
+ensure_length(kps_court, frame_count, None)
 timings.append(("court_detection", perf_counter() - start))
 
 # Inference player (stride reduces runtime dramatically on long clips)
 print(f"[Player] Tracking players with stride={PLAYER_DETECTION_STRIDE}...")
 start = perf_counter()
 person_detector = PersonDetector('cuda')
-persons_top, persons_bottom = person_detector.track_players(
-    frames,
+persons_top, persons_bottom = person_detector.track_players_video(
+    video_path,
     homography_matrices,
     filter_players=False,
     stride=PLAYER_DETECTION_STRIDE,
 )
+ensure_length(persons_top, frame_count, [])
+ensure_length(persons_bottom, frame_count, [])
 timings.append(("player_detection", perf_counter() - start))
 
 # Inference bounce
@@ -81,11 +93,13 @@ y_ball = [x[1] for x in ball_track]
 bounces = bounce_detector.predict(x_ball, y_ball)
 timings.append(("bounce_detection", perf_counter() - start))
 
+frame_accessor = VideoFrameAccessor(video_path)
+
 # Combine and stream-render videos to minimize memory usage
 print("[Combine] Rendering selected visualizations...")
 start = perf_counter()
 combine_outputs = combine_stream(
-    frames,
+    frame_accessor,
     scenes,
     bounces,
     ball_track,
@@ -159,6 +173,7 @@ for output in combine_outputs:
 for writer in writers.values():
     writer.close()
 timings.append(("combine_render", perf_counter() - start))
+frame_accessor.release()
 
 start = perf_counter()
 for name, enabled in output_flags.items():

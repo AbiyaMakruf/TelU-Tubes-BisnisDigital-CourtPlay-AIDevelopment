@@ -1,9 +1,10 @@
 import torch
 import cv2
 import numpy as np
+from collections import deque
 from .tracknet import BallTrackerNet
-from tqdm import tqdm
 from scipy.spatial import distance
+from utils.read_video import frame_generator
 class BallDetector:
     def __init__(self, path_model, original_width, original_height):
         self.model = BallTrackerNet(input_channels=9, out_channels=256)
@@ -18,22 +19,20 @@ class BallDetector:
             self.model = self.model.to(self.device)
             self.model.eval()
 
-    
-    def infer_model(self, frames):
-        if len(frames) == 0:
-            return []
-        ball_track = [(None, None)] * len(frames)
+    def _infer_from_iterator(self, iterator):
+        buffer = deque(maxlen=3)
+        ball_track = []
         prev_pred = [None, None]
-        if len(frames) < 3:
-            return ball_track
-
-        resized_prev2 = cv2.resize(frames[0], (self.width, self.height))
-        resized_prev1 = cv2.resize(frames[1], (self.width, self.height))
 
         with torch.no_grad():
-            for num in tqdm(range(2, len(frames))):
-                resized_curr = cv2.resize(frames[num], (self.width, self.height))
-                imgs = np.concatenate((resized_curr, resized_prev1, resized_prev2), axis=2)
+            for _, frame in iterator:
+                resized = cv2.resize(frame, (self.width, self.height))
+                buffer.append(resized)
+                if len(buffer) < 3:
+                    ball_track.append((None, None))
+                    continue
+
+                imgs = np.concatenate((buffer[2], buffer[1], buffer[0]), axis=2)
                 imgs = imgs.astype(np.float32) / 255.0
                 imgs = np.transpose(imgs, (2, 0, 1))
                 inp = np.expand_dims(imgs, axis=0)
@@ -42,10 +41,15 @@ class BallDetector:
                 output = out.argmax(dim=1).detach().cpu().numpy()
                 x_pred, y_pred = self.postprocess(output, prev_pred)
                 prev_pred = [x_pred, y_pred]
-                ball_track[num] = (x_pred, y_pred)
-
-                resized_prev2, resized_prev1 = resized_prev1, resized_curr
+                ball_track.append((x_pred, y_pred))
         return ball_track
+
+    def infer_model(self, frames):
+        iterator = ((idx, frame) for idx, frame in enumerate(frames))
+        return self._infer_from_iterator(iterator)
+
+    def infer_video(self, path_video):
+        return self._infer_from_iterator(frame_generator(path_video))
 
     def postprocess(self, feature_map, prev_pred, max_dist=80):
         scale = self.scale_factor
