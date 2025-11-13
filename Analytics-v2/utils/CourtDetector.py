@@ -17,14 +17,23 @@ class CourtDetector():
             self.model = self.model.to(self.device)
             self.model.eval()
 
-    def _infer_from_iterator(self, iterator):
+    def _infer_from_iterator(self, iterator, total_frames=None, stride=1):
         output_width = 640
         output_height = 360
         scale = self.original_width / output_width
 
         kps_res = []
         matrixes_res = []
-        for _, image_frame in iterator:
+        last_points = None
+        last_matrix = None
+        stride = max(1, stride)
+        iterator = tqdm(iterator, total=total_frames, desc="[Court]", unit="frame")
+        for idx, image_frame in iterator:
+            run_detection = (idx % stride == 0) or last_matrix is None
+            if not run_detection:
+                kps_res.append(last_points)
+                matrixes_res.append(last_matrix)
+                continue
             img = cv2.resize(image_frame, (output_width, output_height))
             inp = (img.astype(np.float32) / 255.0).transpose(2, 0, 1)
             inp_tensor = torch.from_numpy(inp).unsqueeze(0).to(self.device)
@@ -53,19 +62,23 @@ class CourtDetector():
             if matrix_trans is not None:
                 points = cv2.perspectiveTransform(refer_kps, matrix_trans)
                 matrix_trans = cv2.invert(matrix_trans)[1]
-            kps_res.append(points)
-            matrixes_res.append(matrix_trans)
+            last_points = points
+            last_matrix = matrix_trans
+            kps_res.append(last_points)
+            matrixes_res.append(last_matrix)
+        if total_frames is not None:
+            while len(kps_res) < total_frames:
+                kps_res.append(last_points)
+                matrixes_res.append(last_matrix)
         return matrixes_res, kps_res
 
-    def infer_model(self, frames):
+    def infer_model(self, frames, stride=1):
         iterator = ((idx, frame) for idx, frame in enumerate(frames))
-        iterator = tqdm(iterator, total=len(frames), desc="[Court]", unit="frame")
-        return self._infer_from_iterator(iterator)
+        return self._infer_from_iterator(iterator, total_frames=len(frames), stride=stride)
 
-    def infer_video(self, path_video, total_frames=None):
+    def infer_video(self, path_video, total_frames=None, stride=1):
         iterator = frame_generator(path_video)
-        iterator = tqdm(iterator, total=total_frames, desc="[Court]", unit="frame")
-        return self._infer_from_iterator(iterator)
+        return self._infer_from_iterator(iterator, total_frames=total_frames, stride=stride)
 
 
 

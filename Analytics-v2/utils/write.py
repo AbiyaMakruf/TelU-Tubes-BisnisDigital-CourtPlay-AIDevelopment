@@ -40,20 +40,35 @@ class VideoStreamWriter:
     """
     Incrementally writes frames to disk to avoid buffering the entire video in memory.
     """
-    def __init__(self, fps: float, path_output_video: str, convert_mp4: bool = True):
+    def __init__(
+        self,
+        fps: float,
+        path_output_video: str,
+        convert_mp4: bool = True,
+        codec: str = "H264",
+        use_hw_accel: bool = True,
+    ):
         self.fps = fps
         self.path_output_video = path_output_video
         self.convert_mp4 = convert_mp4
+        self.codec = codec
+        self.use_hw_accel = use_hw_accel
         self._writer: Optional[cv2.VideoWriter] = None
-        self._avi_path = f"{path_output_video}.avi"
         self._mp4_path = f"{path_output_video}.mp4"
+
+    def _fourcc(self):
+        if self.codec.upper() in {"H264", "AVC1"}:
+            return cv2.VideoWriter_fourcc(*"avc1")
+        if self.codec.upper() == "MP4V":
+            return cv2.VideoWriter_fourcc(*"mp4v")
+        return cv2.VideoWriter_fourcc(*"avc1")
 
     def write(self, frame):
         if self._writer is None:
             height, width = frame.shape[:2]
             self._writer = cv2.VideoWriter(
-                self._avi_path,
-                cv2.VideoWriter_fourcc(*'DIVX'),
+                self._mp4_path,
+                self._fourcc(),
                 self.fps,
                 (width, height),
             )
@@ -63,17 +78,17 @@ class VideoStreamWriter:
         if self._writer is None:
             return
         self._writer.release()
-        if self.convert_mp4:
-            command = [
-                "ffmpeg",
-                "-y",
-                "-i", self._avi_path,
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "23",
-                "-pix_fmt", "yuv420p",
-                self._mp4_path,
-            ]
-            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if os.path.exists(self._avi_path):
-                os.remove(self._avi_path)
+        if not self.convert_mp4:
+            return
+        command = [
+            "ffmpeg",
+            "-y",
+            "-i", self._mp4_path,
+        ]
+        if self.use_hw_accel:
+            command += ["-c:v", "h264_nvenc", "-preset", "p3", "-cq", "23"]
+        else:
+            command += ["-c:v", "libx264", "-preset", "fast", "-crf", "23"]
+        command += ["-pix_fmt", "yuv420p", f"{self._mp4_path}.tmp.mp4"]
+        subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        os.replace(f"{self._mp4_path}.tmp.mp4", self._mp4_path)

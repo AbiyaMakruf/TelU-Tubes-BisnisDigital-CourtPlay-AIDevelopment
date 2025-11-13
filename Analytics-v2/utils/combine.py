@@ -5,6 +5,13 @@ from time import perf_counter
 from typing import Generator, Optional
 from .court_reference import CourtReference
 
+try:
+    import torch
+    from torchvision.transforms import functional as TVF
+except Exception:  # pragma: no cover - optional dependency
+    torch = None
+    TVF = None
+
 
 MINIMAP_WIDTH = 166
 MINIMAP_HEIGHT = 350
@@ -22,6 +29,7 @@ HEAT_ALPHA = 0.65
 CONTOUR_LEVELS = [40, 90, 140, 190, 230]
 PERCENTILE_TARGET_SAMPLES = 250_000
 HEATMAP_DOWNSCALE = 2
+USE_TORCH_HEAT = torch is not None and TVF is not None and torch.cuda.is_available()
 
 
 @dataclass
@@ -161,6 +169,89 @@ def _render_heatmap_overlay(accum, base_img, sigma, percentile, target, incremen
     return _blend_contour_map(base_img, heat_norm), target
 
 
+class TorchHeatAccumulator:
+    def __init__(self, base_img, radius, increment, sigma, percentile, decay, initial_target):
+        if not USE_TORCH_HEAT:
+            raise RuntimeError("Torch heat accumulator requires CUDA.")
+        self.device = torch.device("cuda")
+        height = max(1, base_img.shape[0] // HEATMAP_DOWNSCALE)
+        width = max(1, base_img.shape[1] // HEATMAP_DOWNSCALE)
+        self.accum = torch.zeros((1, 1, height, width), device=self.device, dtype=torch.float32)
+        self.radius = _scaled_radius(radius)
+        kernel_size = self.radius * 2 + 1
+        yy, xx = torch.meshgrid(
+            torch.arange(kernel_size, device=self.device),
+            torch.arange(kernel_size, device=self.device),
+            indexing="ij",
+        )
+        center = self.radius
+        disk = ((yy - center) ** 2 + (xx - center) ** 2) <= (self.radius ** 2)
+        self.disk_kernel = disk.float()
+        self.increment = increment
+        self.scale = HEATMAP_DOWNSCALE
+        self.base_img = base_img
+        self.percentile = percentile
+        self.decay = decay
+        self.target = initial_target
+        self.sigma = max(0.1, sigma / self.scale)
+        kernel_extent = max(3, int(6 * self.sigma) | 1)
+        if kernel_extent % 2 == 0:
+            kernel_extent += 1
+        self.kernel_size = [kernel_extent, kernel_extent]
+        self.dirty = False
+        self.last_image = base_img.copy()
+
+    def add_point(self, x, y):
+        hx = int(x / self.scale)
+        hy = int(y / self.scale)
+        self._add_disk(hx, hy)
+        self.dirty = True
+
+    def _add_disk(self, x, y):
+        h = self.accum.shape[-2]
+        w = self.accum.shape[-1]
+        r = self.radius
+        if h <= 0 or w <= 0:
+            return
+        x0 = max(0, x - r)
+        x1 = min(w, x + r + 1)
+        y0 = max(0, y - r)
+        y1 = min(h, y + r + 1)
+        if x0 >= x1 or y0 >= y1:
+            return
+        kx0 = x0 - (x - r)
+        kx1 = kx0 + (x1 - x0)
+        ky0 = y0 - (y - r)
+        ky1 = ky0 + (y1 - y0)
+        self.accum[..., y0:y1, x0:x1] += self.disk_kernel[ky0:ky1, kx0:kx1] * self.increment
+
+    def render(self):
+        if not self.dirty:
+            return self.last_image.copy()
+        blurred = TVF.gaussian_blur(
+            self.accum,
+            kernel_size=self.kernel_size,
+            sigma=(self.sigma, self.sigma),
+        )
+        positives = blurred[blurred > 0]
+        if positives.numel() == 0:
+            self.last_image = self.base_img.copy()
+            self.dirty = False
+            return self.last_image.copy()
+        percentile = torch.quantile(positives, self.percentile / 100.0).item()
+        self.target = max(self.target * self.decay, percentile, self.increment)
+        heat_norm = torch.clamp((blurred / (self.target + 1e-6)) * 255.0, 0, 255).to(torch.uint8)
+        heat_norm = heat_norm.squeeze().detach().cpu().numpy()
+        heat_norm = cv2.resize(
+            heat_norm,
+            (self.base_img.shape[1], self.base_img.shape[0]),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        self.last_image = _blend_contour_map(self.base_img, heat_norm)
+        self.dirty = False
+        return self.last_image.copy()
+
+
 def combine_stream(frames, scenes, bounces, ball_track, homography_matrices, kps_court,
                    persons_top, persons_bottom, draw_trace=False, trace=10,
                    render_options: Optional[CombineRenderOptions] = None) -> Generator[CombineFrameOutputs, None, None]:
@@ -217,16 +308,51 @@ def combine_stream(frames, scenes, bounces, ball_track, homography_matrices, kps
         court_ball = (court_template.copy() if want_minimap_ball else None)
         court_player_heat = court_template.copy() if want_heatmap_player else None
         court_ball_heat = court_template.copy() if want_heatmap_ball else None
-        heatmap_accum = _alloc_heatmap(court_template) if want_heatmap_player else None
-        ball_heatmap_accum = _alloc_heatmap(court_template) if want_heatmap_ball else None
-        heat_target = PLAYER_HEAT_INCREMENT * 15
-        ball_heat_target = BALL_HEAT_INCREMENT * 8
-        player_heat_dirty = False
-        ball_heat_dirty = False
-        player_heat_image = court_player_heat.copy() if want_heatmap_player else None
-        ball_heat_image = court_ball_heat.copy() if want_heatmap_ball else None
-        player_heat_sigma = max(0.1, PLAYER_HEAT_GAUSSIAN_SIGMA / HEATMAP_DOWNSCALE)
-        ball_heat_sigma = max(0.1, BALL_HEAT_GAUSSIAN_SIGMA / HEATMAP_DOWNSCALE)
+        player_heat_torch = None
+        ball_heat_torch = None
+        if want_heatmap_player and USE_TORCH_HEAT:
+            player_heat_torch = TorchHeatAccumulator(
+                court_player_heat,
+                PLAYER_HEAT_RADIUS,
+                PLAYER_HEAT_INCREMENT,
+                PLAYER_HEAT_GAUSSIAN_SIGMA,
+                PLAYER_HEAT_PERCENTILE,
+                PLAYER_HEAT_TARGET_DECAY,
+                PLAYER_HEAT_INCREMENT * 15,
+            )
+            heatmap_accum = None
+            player_heat_image = court_player_heat.copy()
+            heat_target = PLAYER_HEAT_INCREMENT * 15
+            player_heat_dirty = False
+            player_heat_sigma = None
+        else:
+            heatmap_accum = _alloc_heatmap(court_template) if want_heatmap_player else None
+            player_heat_image = court_player_heat.copy() if want_heatmap_player else None
+            heat_target = PLAYER_HEAT_INCREMENT * 15
+            player_heat_dirty = False
+            player_heat_sigma = max(0.1, PLAYER_HEAT_GAUSSIAN_SIGMA / HEATMAP_DOWNSCALE)
+
+        if want_heatmap_ball and USE_TORCH_HEAT:
+            ball_heat_torch = TorchHeatAccumulator(
+                court_ball_heat,
+                BALL_HEAT_RADIUS,
+                BALL_HEAT_INCREMENT,
+                BALL_HEAT_GAUSSIAN_SIGMA,
+                BALL_HEAT_PERCENTILE,
+                BALL_HEAT_TARGET_DECAY,
+                BALL_HEAT_INCREMENT * 8,
+            )
+            ball_heatmap_accum = None
+            ball_heat_image = court_ball_heat.copy()
+            ball_heat_target = BALL_HEAT_INCREMENT * 8
+            ball_heat_dirty = False
+            ball_heat_sigma = None
+        else:
+            ball_heatmap_accum = _alloc_heatmap(court_template) if want_heatmap_ball else None
+            ball_heat_image = court_ball_heat.copy() if want_heatmap_ball else None
+            ball_heat_target = BALL_HEAT_INCREMENT * 8
+            ball_heat_dirty = False
+            ball_heat_sigma = max(0.1, BALL_HEAT_GAUSSIAN_SIGMA / HEATMAP_DOWNSCALE)
 
         for idx in range(scene_start, scene_end):
             frame_profile = {}
@@ -248,7 +374,9 @@ def combine_stream(frames, scenes, bounces, ball_track, homography_matrices, kps
                     cv2.circle(court_base, ball_point, radius=0, color=(0, 255, 255), thickness=50)
                 if want_minimap_ball and court_ball is not None:
                     cv2.circle(court_ball, ball_point, radius=0, color=(0, 255, 255), thickness=50)
-                if want_heatmap_ball and ball_heatmap_accum is not None:
+                if ball_heat_torch is not None:
+                    ball_heat_torch.add_point(*ball_point)
+                elif want_heatmap_ball and ball_heatmap_accum is not None:
                     hx, hy = _project_heat_point(ball_point, ball_heatmap_accum.shape)
                     cv2.circle(
                         ball_heatmap_accum,
@@ -281,7 +409,9 @@ def combine_stream(frames, scenes, bounces, ball_track, homography_matrices, kps
                         cv2.circle(minimap, (px, py), radius=0, color=(255, 0, 0), thickness=80)
                     if court_person is not None:
                         cv2.circle(court_person, (px, py), radius=0, color=(255, 0, 0), thickness=80)
-                    if heatmap_accum is not None:
+                    if player_heat_torch is not None:
+                        player_heat_torch.add_point(px, py)
+                    elif heatmap_accum is not None:
                         hx, hy = _project_heat_point((px, py), heatmap_accum.shape)
                         cv2.circle(
                             heatmap_accum,
@@ -308,42 +438,60 @@ def combine_stream(frames, scenes, bounces, ball_track, homography_matrices, kps
             imgs_person_frame = court_person if want_minimap_player else None
 
             imgs_heatmap_frame = None
-            if want_heatmap_player and heatmap_accum is not None:
-                if player_heat_dirty:
-                    section_start = perf_counter()
-                    player_heat_image, heat_target = _render_heatmap_overlay(
-                        heatmap_accum,
-                        court_player_heat,
-                        player_heat_sigma,
-                        PLAYER_HEAT_PERCENTILE,
-                        heat_target,
-                        PLAYER_HEAT_INCREMENT,
-                        PLAYER_HEAT_TARGET_DECAY,
-                    )
-                    frame_profile["heatmap_player"] = frame_profile.get("heatmap_player", 0.0) + (
-                        perf_counter() - section_start
-                    )
-                    player_heat_dirty = False
-                imgs_heatmap_frame = player_heat_image.copy()
+            if want_heatmap_player:
+                if player_heat_torch is not None:
+                    if player_heat_torch.dirty:
+                        section_start = perf_counter()
+                        player_heat_image = player_heat_torch.render()
+                        frame_profile["heatmap_player"] = frame_profile.get("heatmap_player", 0.0) + (
+                            perf_counter() - section_start
+                        )
+                    imgs_heatmap_frame = player_heat_image.copy()
+                elif heatmap_accum is not None:
+                    if player_heat_dirty:
+                        section_start = perf_counter()
+                        player_heat_image, heat_target = _render_heatmap_overlay(
+                            heatmap_accum,
+                            court_player_heat,
+                            player_heat_sigma,
+                            PLAYER_HEAT_PERCENTILE,
+                            heat_target,
+                            PLAYER_HEAT_INCREMENT,
+                            PLAYER_HEAT_TARGET_DECAY,
+                        )
+                        frame_profile["heatmap_player"] = frame_profile.get("heatmap_player", 0.0) + (
+                            perf_counter() - section_start
+                        )
+                        player_heat_dirty = False
+                    imgs_heatmap_frame = player_heat_image.copy()
 
             imgs_ball_heatmap_frame = None
-            if want_heatmap_ball and ball_heatmap_accum is not None:
-                if ball_heat_dirty:
-                    section_start = perf_counter()
-                    ball_heat_image, ball_heat_target = _render_heatmap_overlay(
-                        ball_heatmap_accum,
-                        court_ball_heat,
-                        ball_heat_sigma,
-                        BALL_HEAT_PERCENTILE,
-                        ball_heat_target,
-                        BALL_HEAT_INCREMENT,
-                        BALL_HEAT_TARGET_DECAY,
-                    )
-                    frame_profile["heatmap_ball"] = frame_profile.get("heatmap_ball", 0.0) + (
-                        perf_counter() - section_start
-                    )
-                    ball_heat_dirty = False
-                imgs_ball_heatmap_frame = ball_heat_image.copy()
+            if want_heatmap_ball:
+                if ball_heat_torch is not None:
+                    if ball_heat_torch.dirty:
+                        section_start = perf_counter()
+                        ball_heat_image = ball_heat_torch.render()
+                        frame_profile["heatmap_ball"] = frame_profile.get("heatmap_ball", 0.0) + (
+                            perf_counter() - section_start
+                        )
+                    imgs_ball_heatmap_frame = ball_heat_image.copy()
+                elif ball_heatmap_accum is not None:
+                    if ball_heat_dirty:
+                        section_start = perf_counter()
+                        ball_heat_image, ball_heat_target = _render_heatmap_overlay(
+                            ball_heatmap_accum,
+                            court_ball_heat,
+                            ball_heat_sigma,
+                            BALL_HEAT_PERCENTILE,
+                            ball_heat_target,
+                            BALL_HEAT_INCREMENT,
+                            BALL_HEAT_TARGET_DECAY,
+                        )
+                        frame_profile["heatmap_ball"] = frame_profile.get("heatmap_ball", 0.0) + (
+                            perf_counter() - section_start
+                        )
+                        ball_heat_dirty = False
+                    imgs_ball_heatmap_frame = ball_heat_image.copy()
 
             frame_profile["total"] = frame_profile.get("total", 0.0) + (perf_counter() - frame_start)
             yield CombineFrameOutputs(

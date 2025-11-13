@@ -12,7 +12,7 @@ from utils.scene_manager import scene_detect
 import time
 
 start_time = time.time()
-video_name = "15s.mp4"
+video_name = "240s.mp4"
 video_path = f"test_videos/{video_name}"
 output_path = "results/output"
 
@@ -25,6 +25,7 @@ OUTPUT_SELECTION = CombineRenderOptions(
     heatmap_ball=True,
 )
 PLAYER_DETECTION_STRIDE = 2  # >=2 skips frames for faster player detection (slight accuracy drop)
+COURT_DETECTION_STRIDE = 2  # run court detector once every N frames
 CONVERT_MP4 = True
 
 
@@ -65,7 +66,11 @@ start = perf_counter()
 court_detector = CourtDetector(path_model='models/court_detector.pt',
                                original_width=original_width,
                                original_height=original_height)
-homography_matrices, kps_court = court_detector.infer_video(video_path, total_frames=frame_count)
+homography_matrices, kps_court = court_detector.infer_video(
+    video_path,
+    total_frames=frame_count,
+    stride=COURT_DETECTION_STRIDE,
+)
 ensure_length(homography_matrices, frame_count, None)
 ensure_length(kps_court, frame_count, None)
 timings.append(("court_detection", perf_counter() - start))
