@@ -12,7 +12,7 @@ from utils.scene_manager import scene_detect
 import time
 
 start_time = time.time()
-video_name = "15s.mp4"
+video_name = "494s.mp4"
 video_path = f"test_videos/{video_name}"
 output_path = "results/output"
 
