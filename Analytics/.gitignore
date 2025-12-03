@@ -1,0 +1,5 @@
+*.pt
+examples/
+*.avi
+*.mp4
+.env
