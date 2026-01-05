@@ -1,6 +1,9 @@
 # 🎾 CourtPlay - AI Development & Research 🧪
 
-![CourtPlay Logo](README/logo.png)
+<div align="center">
+  <img src="README/logo.png" alt="CourtPlay Logo" width="200">
+</div>
+
 
 ## 👋 Halo, Selamat Datang di Dapur AI CourtPlay! 🍳🤖
 
@@ -27,7 +30,13 @@ Jangan lupa mampir ke repository saudara-saudaranya ya, biar paham full context-
 
 Kita pake tools dan library yang powerful buat ngolah video dan gambar. Cekidot! 👇
 
-![Tech Stack](README/tech_stack.png)
+| Tech Stack Umum | Tech Stack Backend & AI |
+| :---: | :---: |
+| ![Tech Stack General](laporan_akhir/tech_stack_general.png) | ![Tech Stack Backend AI](laporan_akhir/tech_stack_backend_ai.png) |
+
+| Tech Stack Pengembangan Model | Tech Stack Web App |
+| :---: | :---: |
+| ![Tech Stack Model Development](laporan_akhir/tech_stack_development_model.png) | ![Tech Stack Web App](laporan_akhir/tech_stack_webapp.png) |
 
 *   **Language:** 🐍 Python (Wajib fardu ain buat AI).
 *   **Computer Vision:** OpenCV, Scikit-Image.
@@ -42,6 +51,15 @@ Kita pake tools dan library yang powerful buat ngolah video dan gambar. Cekidot!
 *   **DagsHub:** Buat version control data & model (GitHub-nya data scientist!). 🐶
 *   **Roboflow:** Buat manage dataset, labeling, dan augmentasi gambar. 🖼️
 *   **Google Colab / Kaggle:** Buat training model di cloud biar laptop gak meledak. ☁️💥
+
+---
+
+## 📂 Laporan Akhir
+
+*   Gambar-gambar tech stack lengkap ada di folder `laporan_akhir/` (dipake juga di atas).
+*   Video output AI: `laporan_akhir/Contoh video output AI analytics.mp4`.
+*   Video demo web app: `laporan_akhir/Video demo web app.mp4`.
+*   File slide presentasi tersedia di folder `laporan_akhir/` (`CourtPlay - Design Thinking.pdf`, `CourtPlay - Lean Startup.pdf`).
 
 ---
 
